@@ -1,6 +1,6 @@
 # The tool surface
 
-**30 tools**, one per Plane resource, each taking an `action` parameter that selects the operation. 207 actions in total.
+**32 tools**, one per Plane resource, each taking an `action` parameter that selects the operation. 219 actions in total.
 
 ```python
 workitem(action="create", project_id=..., name="Fix login")
@@ -8,7 +8,7 @@ workitem(action="list", project_id=..., pql='state__group = "started"')
 cycle(action="archive", project_id=..., cycle_id=...)
 ```
 
-A compact catalogue — 30 tools, ~67k characters — loads fully in every MCP client and leaves the context budget to the conversation.
+A compact catalogue — 32 tools, ~70k characters — loads fully in every MCP client and leaves the context budget to the conversation.
 
 Five parts, in this order:
 
@@ -92,12 +92,13 @@ Where the workspace owns a resource outright, both directions of wrong-scope wri
 | Tool | Actions |
 |---|---|
 | `collection` | `list` · `retrieve` · `create` · `update` · `delete` · `list_pages` · `search_pages` · `add_pages` · `remove_page` · `list_members` · `add_member` · `update_member` · `remove_member` |
+| `company` | `list` · `create` · `update` · `delete` · `list_members` · `add_members` · `remove_member` · `cancel_invitation` |
 | `customer` | `list` · `retrieve` · `create` · `update` · `delete` · `list_workitems` · `manage_workitems` |
 | `customer_property` | `list` · `retrieve` · `create` · `update` · `delete` · `get_values` · `set_values` |
 | `customer_request` | `list` · `retrieve` · `create` · `update` · `delete` |
 | `cycle` | `list` · `retrieve` · `create` · `update` · `delete` · `list_workitems` · `manage_workitems` · `transfer_workitems` · `complete` · `archive` · `unarchive` |
 | `get_pql_reference` | *(no action parameter)* |
-| `initiative` | `list` · `retrieve` · `create` · `update` · `delete` · `list_projects` · `add_projects` · `remove_projects` · `list_workitems` · `manage_workitems` |
+| `initiative` | `list` · `retrieve` · `create` · `update` · `delete` · `list_projects` · `hierarchy` · `list_members` · `add_members` · `update_member` · `remove_member` |
 | `intake` | `list` · `retrieve` · `create` · `update` · `delete` |
 | `label` | `list` · `retrieve` · `create` · `update` · `delete` |
 | `member` | `me` · `list_workspace` · `list_project` · `list_roles` · `retrieve_role` |
@@ -109,6 +110,7 @@ Where the workspace owns a resource outright, both directions of wrong-scope wri
 | `release` | `list` · `retrieve` · `create` · `update` · `delete` · `get_changelog` · `update_changelog` · `list_workitems` · `manage_workitems` |
 | `release_label` | `list` · `create` · `update` · `delete` · `attach` · `detach` |
 | `release_tag` | `list` · `retrieve` · `create` · `update` · `delete` |
+| `schedule` | `list` · `set` · `clear` |
 | `state` | `list` · `retrieve` · `create` · `update` · `delete` |
 | `template` | `list` · `create` · `update` · `delete` |
 | `work_log` | `list` · `create` · `update` · `delete` |

@@ -18,6 +18,7 @@ from types import ModuleType
 
 from plane_mcp.tools import (
     collection,
+    company,
     customer,
     customer_property,
     customer_request,
@@ -35,6 +36,7 @@ from plane_mcp.tools import (
     release,
     release_label,
     release_tag,
+    schedule,
     state,
     template,
     work_log,
@@ -80,6 +82,9 @@ RESOURCES: tuple[ModuleType, ...] = (
     workspace,
     template,
     collection,
+    # hpcinnexp/plane fork resources, appended.
+    company,
+    schedule,
 )
 
 

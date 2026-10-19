@@ -97,11 +97,18 @@ async def run_integration_test():
     )
 
     async with Client(transport=transport) as client:
-        # 1. Create project
+        # 1. Create project, inside an initiative: the fork requires one
+        print("Creating initiative...")
+        initiative = extract_result(
+            await client.call_tool("create_initiative", {"name": f"Test Initiative {unique_id}"})
+        )
+        initiative_id = initiative["id"]
+
         print("Creating project...")
         project_result = await client.call_tool(
             "create_project",
             {
+                "initiative_id": initiative_id,
                 "name": f"Test Project {unique_id}",
                 "identifier": f"TP{unique_id[:3].upper()}",
                 "description": "Integration test project",
@@ -276,6 +283,8 @@ async def run_integration_test():
         print("Deleting project...")
         await client.call_tool("delete_project", {"project_id": project_id})
         print("Deleted project")
+        await client.call_tool("delete_initiative", {"initiative_id": initiative_id})
+        print("Deleted initiative")
 
         print("Integration test passed!")
 

@@ -6,7 +6,8 @@ from typing import Any, NamedTuple
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.utilities.logging import get_logger
-from plane import PlaneClient
+
+from plane_mcp.fork import PlaneForkClient
 
 logger = get_logger(__name__)
 
@@ -14,7 +15,7 @@ logger = get_logger(__name__)
 class PlaneClientContext(NamedTuple):
     """Context containing Plane client and workspace information."""
 
-    client: PlaneClient
+    client: PlaneForkClient
     workspace_slug: str
 
 
@@ -83,12 +84,12 @@ def get_plane_client_context() -> PlaneClientContext:
             access_token = token
 
     if access_token:
-        client = PlaneClient(
+        client = PlaneForkClient(
             base_url=base_url,
             access_token=access_token,
         )
     else:
-        client = PlaneClient(
+        client = PlaneForkClient(
             base_url=base_url,
             api_key=api_key,
         )

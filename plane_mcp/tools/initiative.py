@@ -1,8 +1,9 @@
-"""Workspace initiatives, and the projects rolled up under them.
+"""Workspace initiatives, as the hpcinnexp/plane fork models them.
 
-Native initiatives exist only when the workspace feature is enabled. When it is
-off, initiatives are modelled as "Initiative" work items, so every action here
-redirects to that path rather than failing with a bare API error.
+Hierarchy: Initiative -> Project -> Module -> Cycle -> Work item. Every project
+belongs to exactly one initiative, set on the project itself (`project create`
+with initiative_id). Initiatives are always on; there is no feature flag to probe.
+See `plane_mcp/fork.py` for why this does not go through the SDK's namespace.
 """
 
 from __future__ import annotations
@@ -10,84 +11,57 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from plane.models.initiatives import (
-    CreateInitiative,
-    Initiative,
-    InitiativeState,
-    PaginatedInitiativeResponse,
-    UpdateInitiative,
-)
-from plane.models.projects import PaginatedProjectResponse
-from plane.models.work_items import PaginatedWorkItemResponse
 
 from plane_mcp.client import get_plane_client_context
-from plane_mcp.toolkit import (
-    Action,
-    build_annotations,
-    build_description,
-    coerce_list,
-    envelope,
-    missing,
-    one_of,
-    opt,
-    page_params,
-    require,
-)
+from plane_mcp.fork import answers_refusals
+from plane_mcp.toolkit import Action, build_annotations, build_description, coerce_list, one_of, opt, require
 
 NAME = "initiative"
 TITLE = "Initiatives"
 
-STATES = ("DRAFT", "PLANNED", "ACTIVE", "COMPLETED", "CLOSED")
+STATUSES = ("planned", "in-progress", "paused", "completed", "cancelled")
+ROLES = {"admin": 20, "member": 15}
 
-_WORK_ITEM_FALLBACK = (
-    'Initiatives are stored as "Initiative" work items in this workspace. '
-    'Call `workitem_type resolve` with project_id and name="Initiative" to get the type id, '
-    "then `workitem list` with pql='type = \"<type id>\"' to read them, or "
-    "`workitem create` with that type_id to add one. Work items belong to a project -- "
-    "ask which project if none was named."
-)
-_PROJECTS_NEED_NATIVE = (
-    "Linking projects to an initiative requires the native initiatives feature; "
-    "there is no work-item equivalent. Enable it in workspace settings."
-)
-_WORKITEMS_NEED_NATIVE = (
-    "Linking work items to an initiative requires the native initiatives feature. Enable it in workspace settings."
+_FIELDS = (
+    "identifier",
+    "description",
+    "status",
+    "start_date",
+    "target_date",
+    "lead",
+    "client_ids",
+    "company_ids",
 )
 
 ACTIONS = (
-    Action("list", (), note="returns every initiative; this endpoint does not paginate", read=True),
+    Action("list", (), ("include_archived",), note="every initiative, each with the project_ids you see", read=True),
     Action("retrieve", ("initiative_id",), read=True),
-    Action("create", ("name",), ("description_html", "start_date", "end_date", "state", "lead")),
+    Action("create", ("name",), _FIELDS, note="you become its admin"),
     Action(
         "update",
         ("initiative_id",),
-        ("name", "description_html", "start_date", "end_date", "state", "lead"),
-        note="only the fields you pass are changed",
+        ("name", *_FIELDS),
+        note="initiative admins only; only the fields you pass are changed",
     ),
-    Action("delete", ("initiative_id",), destructive=True),
-    Action("list_projects", ("initiative_id",), ("cursor", "per_page"), read=True),
-    Action("add_projects", ("initiative_id", "project_ids"), note="returns nothing, read back with list_projects"),
+    Action("delete", ("initiative_id",), note="initiative admins only; it must have no projects", destructive=True),
+    Action("list_projects", ("initiative_id",), note="the projects you see, with is_member", read=True),
     Action(
-        "remove_projects",
-        ("initiative_id", "project_ids"),
-        note="returns nothing, read back with list_projects",
-        destructive=True,
-    ),
-    Action("list_workitems", ("initiative_id",), ("cursor", "per_page"), read=True),
-    Action(
-        "manage_workitems",
+        "hierarchy",
         ("initiative_id",),
-        ("add_ids", "remove_ids"),
-        note="pass at least one of add_ids or remove_ids; each takes one id or several, "
-        "and removals apply first; returns nothing, read back with list_workitems",
+        note="projects -> modules -> cycles with work item counts and estimated hours",
+        read=True,
     ),
+    Action("list_members", ("initiative_id",), read=True),
+    Action("add_members", ("initiative_id", "member_ids"), ("role",), note="initiative admins only"),
+    Action("update_member", ("initiative_id", "member_id", "role"), note="initiative admins only"),
+    Action("remove_member", ("initiative_id", "member_id"), note="initiative admins only", destructive=True),
 )
 
 FOOTER = (
-    f"state is one of: {', '.join(STATES)}. Dates are ISO 8601 (YYYY-MM-DD). "
-    "lead is a member id. project_ids takes project UUIDs, add_ids and remove_ids "
-    "work item UUIDs. A work item of any type can be linked to an initiative."
+    f"status: {', '.join(STATUSES)}. role: admin or member (default). Dates are YYYY-MM-DD. "
+    "lead and member ids come from `member list_workspace`, company_ids from `company list`; id lists "
+    "replace the whole list. identifier defaults from the name. A project joins an initiative through "
+    "`project update` initiative_id."
 )
 
 LEGACY = {
@@ -100,24 +74,29 @@ LEGACY = {
 }
 
 LEGACY_UNMAPPED = {
-    "manage_initiative_projects": "took action='add'|'remove', which collides with the dispatch "
-    "key: use add_projects or remove_projects",
+    "manage_initiative_projects": "a project's initiative is set on the project: use `project update` with "
+    "initiative_id",
 }
 
 
-def _require_native(client: Any, workspace_slug: str, fallback: str) -> None:
-    """Native endpoints 404 when the feature is off; say what to do instead."""
-    features = client.workspaces.get_features(workspace_slug=workspace_slug)
-    if not features.model_dump().get("initiatives"):
-        raise ToolError(f"The initiatives feature is disabled for this workspace. {fallback}")
+def _payload(**fields: Any) -> dict[str, Any]:
+    """The fields the caller set. An id list is sent even when empty, since [] clears it."""
+    payload = {key: opt(value) for key, value in fields.items() if key not in ("client_ids", "company_ids")}
+    payload = {key: value for key, value in payload.items() if value is not None}
+    for key in ("client_ids", "company_ids"):
+        ids = coerce_list(fields[key])
+        if ids is not None:
+            payload[key] = ids
+    return payload
 
 
 def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name=NAME,
-        description=build_description("Workspace initiatives.", ACTIONS, FOOTER),
+        description=build_description("Workspace initiatives; each groups projects.", ACTIONS, FOOTER),
         annotations=build_annotations(TITLE, ACTIONS),
     )
+    @answers_refusals
     def initiative(
         action: Literal[
             "list",
@@ -126,116 +105,96 @@ def register(mcp: FastMCP) -> None:
             "update",
             "delete",
             "list_projects",
-            "add_projects",
-            "remove_projects",
-            "list_workitems",
-            "manage_workitems",
+            "hierarchy",
+            "list_members",
+            "add_members",
+            "update_member",
+            "remove_member",
         ],
         initiative_id: str = "",
         name: str = "",
-        description_html: str = "",
+        identifier: str = "",
+        description: str = "",
+        status: str = "",
         start_date: str = "",
-        end_date: str = "",
-        state: str = "",
+        target_date: str = "",
         lead: str = "",
-        project_ids: str = "",
-        add_ids: str = "",
-        remove_ids: str = "",
-        cursor: str = "",
-        per_page: int = 0,
-    ) -> Initiative | list[Initiative] | dict[str, Any] | str | None:
+        client_ids: str = "",
+        company_ids: str = "",
+        include_archived: bool = False,
+        member_id: str = "",
+        member_ids: str = "",
+        role: str = "",
+    ) -> dict[str, Any] | list[dict[str, Any]] | str | None:
         client, workspace_slug = get_plane_client_context()
 
-        if error := one_of("state", state, STATES):
+        if error := one_of("status", status, STATUSES) or one_of("role", role, tuple(ROLES)):
             return error
-        initiative_state: InitiativeState | None = state or None  # type: ignore[assignment]
-
-        # Validated before the feature probe below, which costs a request.
-        absent = require(ACTIONS, action, initiative_id=initiative_id, name=name, project_ids=project_ids)
-        if absent:
+        if absent := require(
+            ACTIONS,
+            action,
+            initiative_id=initiative_id,
+            name=name,
+            member_id=member_id,
+            member_ids=member_ids,
+            role=role,
+        ):
             return absent
 
-        if action in ("list_projects", "add_projects", "remove_projects"):
-            _require_native(client, workspace_slug, _PROJECTS_NEED_NATIVE)
-        elif action in ("list_workitems", "manage_workitems"):
-            _require_native(client, workspace_slug, _WORKITEMS_NEED_NATIVE)
-        else:
-            _require_native(client, workspace_slug, _WORK_ITEM_FALLBACK)
+        initiatives = client.fork.initiatives
+        fields = dict(
+            identifier=identifier,
+            description=description,
+            status=status,
+            start_date=start_date,
+            target_date=target_date,
+            lead=lead,
+            client_ids=client_ids,
+            company_ids=company_ids,
+        )
 
         if action == "list":
-            # No cursor or per_page: PaginatedInitiativeResponse carries `results`
-            # and nothing else, so a page size could only truncate the answer with
-            # no way to ask for the rest.
-            response: PaginatedInitiativeResponse = client.initiatives.list(workspace_slug=workspace_slug)
-            return response.results
+            return initiatives.list(workspace_slug=workspace_slug, include_archived=include_archived)
 
         if action == "create":
-            return client.initiatives.create(
-                workspace_slug=workspace_slug,
-                data=CreateInitiative(
-                    name=name,
-                    description_html=opt(description_html),
-                    start_date=opt(start_date),
-                    end_date=opt(end_date),
-                    state=initiative_state,
-                    lead=opt(lead),
-                ),
-            )
+            return initiatives.create(workspace_slug=workspace_slug, data=_payload(name=name, **fields))
 
         if action == "retrieve":
-            return client.initiatives.retrieve(workspace_slug=workspace_slug, initiative_id=initiative_id)
+            return initiatives.retrieve(workspace_slug=workspace_slug, initiative_id=initiative_id)
 
         if action == "update":
-            return client.initiatives.update(
-                workspace_slug=workspace_slug,
-                initiative_id=initiative_id,
-                data=UpdateInitiative(
-                    name=opt(name),
-                    description_html=opt(description_html),
-                    start_date=opt(start_date),
-                    end_date=opt(end_date),
-                    state=initiative_state,
-                    lead=opt(lead),
-                ),
+            return initiatives.update(
+                workspace_slug=workspace_slug, initiative_id=initiative_id, data=_payload(name=name, **fields)
             )
 
         if action == "delete":
-            client.initiatives.delete(workspace_slug=workspace_slug, initiative_id=initiative_id)
+            initiatives.delete(workspace_slug=workspace_slug, initiative_id=initiative_id)
             return None
 
-        if action in ("list_workitems", "manage_workitems"):
-            work_items = client.initiatives.work_items
+        if action in ("list_projects", "hierarchy"):
+            tree = initiatives.hierarchy(workspace_slug=workspace_slug, initiative_id=initiative_id)
+            if action == "hierarchy":
+                return tree
+            return [
+                {key: value for key, value in project.items() if key not in ("modules", "unassigned_cycles")}
+                for project in (tree or {}).get("projects", [])
+            ]
 
-            if action == "list_workitems":
-                linked_workitems: PaginatedWorkItemResponse = work_items.list(
-                    workspace_slug=workspace_slug,
-                    initiative_id=initiative_id,
-                    params=page_params(cursor, per_page),
-                )
-                return envelope(linked_workitems)
+        if action == "list_members":
+            return initiatives.list_members(workspace_slug=workspace_slug, initiative_id=initiative_id)
 
-            add = coerce_list(add_ids)
-            remove = coerce_list(remove_ids)
-            if not add and not remove:
-                return missing(action, "add_ids or remove_ids")
-            # Removals first, so one call can swap an id out for another.
-            if remove:
-                work_items.remove(workspace_slug=workspace_slug, initiative_id=initiative_id, work_item_ids=remove)
-            if add:
-                work_items.add(workspace_slug=workspace_slug, initiative_id=initiative_id, work_item_ids=add)
-            return None
-
-        projects = client.initiatives.projects
-
-        if action == "list_projects":
-            linked: PaginatedProjectResponse = projects.list(
+        if action == "add_members":
+            return initiatives.add_members(
                 workspace_slug=workspace_slug,
                 initiative_id=initiative_id,
-                params=page_params(cursor, per_page),
+                member_ids=coerce_list(member_ids) or [],
+                role=ROLES[role or "member"],
             )
-            return envelope(linked)
 
-        ids = coerce_list(project_ids)
-        mutate = projects.add if action == "add_projects" else projects.remove
-        mutate(workspace_slug=workspace_slug, initiative_id=initiative_id, project_ids=ids)
+        if action == "update_member":
+            return initiatives.update_member(
+                workspace_slug=workspace_slug, initiative_id=initiative_id, member_id=member_id, role=ROLES[role]
+            )
+
+        initiatives.remove_member(workspace_slug=workspace_slug, initiative_id=initiative_id, member_id=member_id)
         return None

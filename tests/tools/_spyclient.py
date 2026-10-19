@@ -5,8 +5,9 @@ accepts anything -- including a misspelled keyword or a dict where the SDK wants
 a Pydantic params model. Both mistakes reach production as an AttributeError or
 a silently ignored argument.
 
-This spy mirrors the real `PlaneClient`, binds every call against the genuine
-signature, and type-checks each argument with the genuine annotation.
+This spy mirrors the real `PlaneForkClient` (the SDK client plus the fork's
+resources), binds every call against the genuine signature, and type-checks
+each argument with the genuine annotation.
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin, get_type_hints
 
-from plane import PlaneClient
 from pydantic import BaseModel, TypeAdapter
+
+from plane_mcp.fork import PlaneForkClient
 
 types_UnionType = type(int | str)  # `X | Y` annotations are not typing.Union
 
@@ -188,7 +190,7 @@ class SpyClient(_Namespace):
     """Records calls against a real client's shape without performing them."""
 
     def __init__(self, returns: dict[str, Any] | None = None, default: Any = None) -> None:
-        real = PlaneClient(api_key="spy", base_url="http://spy.invalid")
+        real = PlaneForkClient(api_key="spy", base_url="http://spy.invalid")
         super().__init__(self, real, "")
         self.__dict__["recorder"] = Recorder()
         self.__dict__["returns"] = returns or {}

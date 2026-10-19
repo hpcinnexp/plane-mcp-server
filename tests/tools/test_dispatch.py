@@ -21,7 +21,10 @@ from plane_mcp.toolkit.spec import action_names
 # Values that satisfy a parameter well enough to reach the SDK call. Enum-valued
 # parameters need a member of their own vocabulary; the rest take a plausible id.
 SAMPLES: dict[str, object] = {
-    "status": {"cycle": "current", "module": "backlog", "intake": 1, "release": "planned"},
+    "status": {"cycle": "current", "module": "backlog", "intake": 1, "release": "planned", "initiative": "planned"},
+    "role": {"initiative": "admin"},
+    "start_minute": 540,
+    "end_minute": 600,
     "priority": "medium",
     "group": "started",
     "relation_type": "blocked_by",
@@ -49,7 +52,7 @@ CONDITIONAL: dict[tuple[str, str], dict[str, object]] = {
     ("cycle", "manage_workitems"): {"add_ids": "id-1"},
     ("module", "manage_workitems"): {"add_ids": "id-1"},
     ("milestone", "manage_workitems"): {"add_ids": "id-1"},
-    ("initiative", "manage_workitems"): {"add_ids": "id-1"},
+    ("company", "add_members"): {"member_ids": "id-1"},
     ("workitem", "manage_assignee"): {"add_user_id": "id-1"},
     ("workitem", "manage_label"): {"add_label_id": "id-1"},
     ("workitem", "count"): {"pql": "state__group = 'started'"},
@@ -180,9 +183,6 @@ def test_a_zero_that_means_something_reaches_the_sdk(tool_name, args, field, reg
 MEMBERSHIP_MUTATIONS = {
     ("cycle", "manage_workitems"),
     ("customer", "manage_workitems"),
-    ("initiative", "add_projects"),
-    ("initiative", "remove_projects"),
-    ("initiative", "manage_workitems"),
     ("milestone", "manage_workitems"),
     ("module", "manage_workitems"),
     ("release", "manage_workitems"),
@@ -326,75 +326,6 @@ def test_archive_omitted_still_archives(tool, arguments, method, registered, spy
     registered[tool].fn(action="archive", **arguments)
 
     assert spy.recorder.only().method == method
-
-
-# Initiatives roll up work items as well as projects. The two child collections
-# reach different SDK sub-resources, and `manage_workitems` is the only action on
-# this tool that issues two calls, so the order between them is pinned here.
-
-
-class _WorkItemPage:
-    """One page of work items, carrying the full pagination envelope."""
-
-    results = [{"id": "w-1"}]
-    total_count = 1
-    count = 1
-    next_cursor = "c-2"
-    prev_cursor = "c-0"
-    next_page_results = True
-    prev_page_results = False
-
-
-def _initiative_calls(spy):
-    """The SDK calls a dispatch made, minus the workspace feature probe."""
-    return [call for call in spy.recorder.calls if call.method != "workspaces.get_features"]
-
-
-def test_listing_initiative_workitems_pages_through_its_own_sub_resource(registered, spy):
-    spy.__dict__["default"] = _WorkItemPage()
-
-    result = registered["initiative"].fn(action="list_workitems", initiative_id="i-1", cursor="c-1", per_page=5)
-
-    call = _initiative_calls(spy)[-1]
-    assert call.method == "initiatives.work_items.list", (
-        "work items must reach the work_items sub-resource, not projects or the deprecated epics"
-    )
-    assert call.kwargs["initiative_id"] == "i-1"
-    assert call.kwargs["params"] == {"cursor": "c-1", "per_page": 5}
-    assert result["next_cursor"] == "c-2", "a paged action must hand back the cursor it accepted"
-
-
-def test_managing_initiative_workitems_removes_before_it_adds(registered, spy):
-    """Removals first, so one call can swap an id out for another without the add
-    being undone by the remove that follows it."""
-    registered["initiative"].fn(action="manage_workitems", initiative_id="i-1", add_ids="w-new", remove_ids="w-old")
-
-    calls = _initiative_calls(spy)
-    assert [call.method for call in calls] == [
-        "initiatives.work_items.remove",
-        "initiatives.work_items.add",
-    ]
-    assert calls[0].kwargs["work_item_ids"] == ["w-old"]
-    assert calls[1].kwargs["work_item_ids"] == ["w-new"]
-
-
-@pytest.mark.parametrize(
-    ("supplied", "expected"),
-    [("w-1,w-2", ["w-1", "w-2"]), ('["w-1", "w-2"]', ["w-1", "w-2"]), ("w-1", ["w-1"])],
-    ids=["comma", "json", "single"],
-)
-def test_initiative_workitem_ids_take_one_id_or_several(supplied, expected, registered, spy):
-    registered["initiative"].fn(action="manage_workitems", initiative_id="i-1", add_ids=supplied)
-
-    assert _initiative_calls(spy)[-1].kwargs["work_item_ids"] == expected
-
-
-def test_managing_initiative_workitems_with_neither_side_asks_for_one(registered, spy):
-    """A call that names no ids would otherwise reach Plane and change nothing."""
-    result = registered["initiative"].fn(action="manage_workitems", initiative_id="i-1")
-
-    assert result == "Error: action 'manage_workitems' requires: add_ids or remove_ids."
-    assert not _initiative_calls(spy), "the refusal must replace the call, not follow it"
 
 
 # A link's title is the text Plane shows instead of the raw URL. The SDK and the API

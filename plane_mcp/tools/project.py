@@ -7,18 +7,27 @@ from typing import Literal, get_args
 from fastmcp import FastMCP
 from plane.models.enums import TimezoneEnum
 from plane.models.projects import (
-    CreateProject,
     PaginatedProjectLiteResponse,
     PaginatedProjectMemberResponse,
     Project,
     ProjectFeature,
     ProjectWorklogSummary,
-    UpdateProject,
 )
 from plane.models.query_params import ProjectLiteListQueryParams
 
 from plane_mcp.client import get_plane_client_context
-from plane_mcp.toolkit import Action, build_annotations, build_description, missing, needs, opt, plan_gated, rich_text
+from plane_mcp.fork import ForkCreateProject, ForkUpdateProject
+from plane_mcp.toolkit import (
+    Action,
+    build_annotations,
+    build_description,
+    coerce_list,
+    missing,
+    needs,
+    opt,
+    plan_gated,
+    rich_text,
+)
 
 NAME = "project"
 TITLE = "Projects"
@@ -34,8 +43,9 @@ ACTIONS = (
     Action("retrieve", ("project_id",), read=True),
     Action(
         "create",
-        ("name", "identifier"),
+        ("name", "identifier", "initiative_id"),
         (
+            "client_ids",
             "description",
             "description_html",
             "project_lead",
@@ -54,6 +64,8 @@ ACTIONS = (
         ("project_id",),
         (
             "name",
+            "initiative_id",
+            "client_ids",
             "description",
             "description_html",
             "identifier",
@@ -99,7 +111,8 @@ ACTIONS = (
 
 FOOTER = (
     "identifier is the short work item prefix, such as ENG. network is 0 for secret or 2 for public. "
-    "project_lead and default_assignee are member ids -- get them from `member list_workspace`. "
+    "project_lead, default_assignee and client_ids are member ids -- get them from `member list_workspace`. "
+    "Every project belongs to one initiative (`initiative list`); clients join the project. "
     "Feature toggles are booleans; omitted ones are left as they are."
 )
 
@@ -141,6 +154,8 @@ def register(mcp: FastMCP) -> None:
         project_id: str = "",
         name: str = "",
         identifier: str = "",
+        initiative_id: str = "",
+        client_ids: str = "",
         description: str = "",
         description_html: str = "",
         project_lead: str = "",
@@ -200,13 +215,15 @@ def register(mcp: FastMCP) -> None:
             )
 
         if action == "create":
-            if error := needs(action, name=name, identifier=identifier):
+            if error := needs(action, name=name, identifier=identifier, initiative_id=initiative_id):
                 return error
             return client.projects.create(
                 workspace_slug=workspace_slug,
-                data=CreateProject(
+                data=ForkCreateProject(
                     name=name,
                     identifier=identifier,
+                    initiative=initiative_id,
+                    client_ids=coerce_list(client_ids),
                     description=opt(description),
                     description_html=rich_text(description_html, description),
                     project_lead=opt(project_lead),
@@ -237,8 +254,10 @@ def register(mcp: FastMCP) -> None:
             return client.projects.update(
                 workspace_slug=workspace_slug,
                 project_id=project_id,
-                data=UpdateProject(
+                data=ForkUpdateProject(
                     name=opt(name),
+                    initiative=opt(initiative_id),
+                    client_ids=coerce_list(client_ids),
                     description=opt(description),
                     description_html=rich_text(description_html, description),
                     identifier=opt(identifier),

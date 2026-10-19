@@ -66,6 +66,9 @@ CATALOGUE = [
     # Appended, not sorted in: see registry.py.
     "template",
     "collection",
+    # hpcinnexp/plane fork resources, appended.
+    "company",
+    "schedule",
 ]
 
 
